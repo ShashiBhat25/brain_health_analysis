@@ -12,22 +12,43 @@ from werkzeug.utils import secure_filename
 import joblib
 import pandas as pd
 import io
+
+# Load environment variables (optional)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv not installed, will use environment variables or defaults
+
 app = Flask(__name__)
-app.secret_key = 'your_secret_key_here'
 
-# Disable ALL caching for development
-app.config['TEMPLATES_AUTO_RELOAD'] = True
-app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
-app.jinja_env.auto_reload = True
-app.jinja_env.cache = {}
+# Configuration from environment variables with fallbacks
+app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your_secret_key_here_change_in_production')
+app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 33554432))  # 32MB default
 
-clf=joblib.load('Best_Model.pkl')
+# Production vs Development settings
+IS_PRODUCTION = os.getenv('FLASK_ENV', 'development') == 'production'
+
+if not IS_PRODUCTION:
+    # Development settings
+    app.config['TEMPLATES_AUTO_RELOAD'] = True
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 0
+    app.jinja_env.auto_reload = True
+    app.jinja_env.cache = {}
+else:
+    # Production settings
+    app.config['TEMPLATES_AUTO_RELOAD'] = False
+    app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year
+
+# Load ML model
+clf = joblib.load('Best_Model.pkl')
+
 # -------------------- CONFIG -------------------- #
 
 db_config = {
-    'host': 'localhost',
-    'user': 'root',
-    'password': 'root'
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'user': os.getenv('DB_USER', 'root'),
+    'password': os.getenv('DB_PASSWORD', 'root')
 }
 
 
@@ -195,6 +216,7 @@ def setup_database():
                 doctor_email VARCHAR(100) NOT NULL,
                 result VARCHAR(50),
                 features TEXT,
+                graph_image TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (aadhar_id) REFERENCES patients(aadhar_id)
             )
@@ -1413,24 +1435,27 @@ def send_brain_report(aadhar_id):
     doctor_email = request.form.get("doctor_email")
     result = request.form.get("result")
     features = request.form.get("features")
+    graph_image = request.form.get("graph_image")  # Base64 encoded graph image
 
-    # Store report in database
+    # Store report in database with graph image
     query = """
-        INSERT INTO brain_reports (aadhar_id, doctor_email, result, features)
-        VALUES (%s, %s, %s, %s)
+        INSERT INTO brain_reports (aadhar_id, doctor_email, result, features, graph_image)
+        VALUES (%s, %s, %s, %s, %s)
     """
     conn = get_db_connection()
     cursor = conn.cursor(dictionary=True)
-    values = (aadhar_id, doctor_email, result, features)
+    values = (aadhar_id, doctor_email, result, features, graph_image)
     cursor.execute(query, values)
     conn.commit()
+    cursor.close()
+    conn.close()
 
     # OPTIONAL: Email to doctor
     # send_email(doctor_email, "Brain Signal Report", f"Result:\n{result}")
 
     return render_template(
         "success.html",
-        message="Brain signal report successfully sent to the doctor!"
+        message="Brain signal report with EEG graph successfully sent to the doctor!"
     )
 
 
@@ -1664,4 +1689,10 @@ if __name__ == '__main__':
     setup_database()
     alter_tables()  # preserve previous alterations (safe)
     alter_tables_for_digital_signature()  # ensure digital_signature column exists
-    app.run(host="0.0.0.0",port=5000,debug=True)
+    
+    # Get configuration from environment
+    host = os.getenv('HOST', '0.0.0.0')
+    port = int(os.getenv('PORT', 5000))
+    debug = not IS_PRODUCTION
+    
+    app.run(host=host, port=port, debug=debug)

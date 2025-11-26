@@ -71,6 +71,23 @@
 
                 <hr>
 
+                <!-- EEG Graph Visualization -->
+                {% if r['graph_image'] %}
+                <h5 class="mb-3">
+                    <i class="fas fa-chart-area me-2"></i>EEG Signal Graph
+                </h5>
+                <div class="card mb-4">
+                    <div class="card-body text-center">
+                        <img src="{{ r['graph_image'] }}" alt="EEG Signal Graph" class="img-fluid rounded shadow" style="max-width: 100%; height: auto;">
+                        <p class="text-muted mt-2 mb-0">
+                            <small><i class="fas fa-info-circle me-1"></i>EEG signal pattern visualization from patient analysis</small>
+                        </p>
+                    </div>
+                </div>
+                {% endif %}
+
+                <hr>
+
                 <!-- AI Analysis Result -->
                 <h5 class="mb-3">
                     <i class="fas fa-robot me-2"></i>AI Analysis Result
