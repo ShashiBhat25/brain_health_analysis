@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+
+{% block title %}Setup Two-Factor Authentication{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-primary text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-shield-alt"></i> Setup Two-Factor Authentication (TOTP)
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-info">
+                        <strong>Secure your account!</strong> Two-factor authentication adds an extra layer of security to your healthcare account.
+                    </div>
+
+                    <div class="row">
+                        <div class="col-md-6">
+                            <h5>Step 1: Install Authenticator App</h5>
+                            <p>Download one of these apps on your phone:</p>
+                            <ul>
+                                <li><strong>Google Authenticator</strong> (Recommended)</li>
+                                <li>Microsoft Authenticator</li>
+                                <li>Authy</li>
+                                <li>1Password</li>
+                            </ul>
+
+                            <h5 class="mt-4">Step 2: Scan QR Code</h5>
+                            <p>Open your authenticator app and scan this QR code:</p>
+                            
+                            <div class="text-center mb-3">
+                                <img src="data:image/png;base64,{{ qr_code }}" alt="TOTP QR Code" class="img-fluid border" style="max-width: 200px;">
+                            </div>
+
+                            <div class="alert alert-warning">
+                                <strong>Can't scan?</strong> Manually enter this secret key in your app:<br>
+                                <code>{{ secret }}</code>
+                            </div>
+                        </div>
+
+                        <div class="col-md-6">
+                            <h5>Step 3: Verify Setup</h5>
+                            <p>Enter the 6-digit code from your authenticator app:</p>
+
+                            <form method="POST">
+                                <div class="form-group">
+                                    <label for="totp_code">Authenticator Code:</label>
+                                    <input type="text" 
+                                           class="form-control text-center" 
+                                           id="totp_code" 
+                                           name="totp_code" 
+                                           placeholder="000000" 
+                                           maxlength="6" 
+                                           pattern="[0-9]{6}" 
+                                           required
+                                           style="font-size: 1.5em; letter-spacing: 0.2em;">
+                                </div>
+                                
+                                <button type="submit" class="btn btn-success btn-block">
+                                    <i class="fas fa-check"></i> Enable Two-Factor Authentication
+                                </button>
+                            </form>
+
+                            <div class="mt-4">
+                                <h6>Security Tips:</h6>
+                                <ul class="small">
+                                    <li>Keep your phone secure with a lock screen</li>
+                                    <li>Don't share your authenticator codes</li>
+                                    <li>Save backup codes in a secure location</li>
+                                    <li>Consider having multiple devices with the same secret</li>
+                                </ul>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 text-center">
+                        <a href="{{ url_for(user_type + '_profile') }}" class="btn btn-secondary">
+                            <i class="fas fa-arrow-left"></i> Cancel
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// Auto-format TOTP input
+document.getElementById('totp_code').addEventListener('input', function(e) {
+    // Only allow numbers
+    this.value = this.value.replace(/[^0-9]/g, '');
+    
+    // Auto-submit when 6 digits entered
+    if (this.value.length === 6) {
+        // Small delay to show the complete code
+        setTimeout(() => {
+            this.form.submit();
+        }, 500);
+    }
+});
+
+// Auto-focus on TOTP input
+document.getElementById('totp_code').focus();
+</script>
+{% endblock %}

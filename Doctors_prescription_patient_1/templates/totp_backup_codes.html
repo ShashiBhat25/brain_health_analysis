@@ -1,0 +1,123 @@
+{% extends "base.html" %}
+
+{% block title %}Backup Codes - Two-Factor Authentication{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <div class="row justify-content-center">
+        <div class="col-md-8">
+            <div class="card">
+                <div class="card-header bg-success text-white">
+                    <h4 class="mb-0">
+                        <i class="fas fa-check-circle"></i> Two-Factor Authentication Enabled!
+                    </h4>
+                </div>
+                <div class="card-body">
+                    <div class="alert alert-warning">
+                        <strong>Important!</strong> Save these backup codes in a secure location. You can use them to access your account if you lose your phone.
+                    </div>
+
+                    <h5>Your Backup Codes:</h5>
+                    <div class="row">
+                        {% for code in backup_codes %}
+                        <div class="col-md-6 mb-2">
+                            <div class="card bg-light">
+                                <div class="card-body text-center py-2">
+                                    <code style="font-size: 1.2em;">{{ code }}</code>
+                                </div>
+                            </div>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    <div class="mt-4">
+                        <h6>Important Notes:</h6>
+                        <ul>
+                            <li><strong>Each code can only be used once</strong></li>
+                            <li><strong>Store them securely</strong> - write them down or save in a password manager</li>
+                            <li><strong>Don't share them</strong> with anyone</li>
+                            <li><strong>Generate new codes</strong> if you suspect they're compromised</li>
+                        </ul>
+                    </div>
+
+                    <div class="mt-4 text-center">
+                        <button onclick="printCodes()" class="btn btn-outline-primary mr-2">
+                            <i class="fas fa-print"></i> Print Codes
+                        </button>
+                        <button onclick="copyCodes()" class="btn btn-outline-secondary mr-2">
+                            <i class="fas fa-copy"></i> Copy to Clipboard
+                        </button>
+                        <a href="{{ url_for(user_type + '_profile') }}" class="btn btn-success">
+                            <i class="fas fa-check"></i> Continue to Profile
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function printCodes() {
+    const codes = [{% for code in backup_codes %}'{{ code }}'{% if not loop.last %},{% endif %}{% endfor %}];
+    
+    const printWindow = window.open('', '_blank');
+    printWindow.document.write(`
+        <html>
+        <head>
+            <title>Healthcare App - Backup Codes</title>
+            <style>
+                body { font-family: Arial, sans-serif; margin: 20px; }
+                .header { text-align: center; margin-bottom: 30px; }
+                .codes { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+                .code { padding: 10px; border: 1px solid #ccc; text-align: center; font-family: monospace; font-size: 16px; }
+                .warning { background-color: #fff3cd; padding: 15px; border: 1px solid #ffeaa7; margin-top: 20px; }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <h2>Healthcare App - Two-Factor Authentication</h2>
+                <h3>Backup Codes</h3>
+                <p>Generated on: ${new Date().toLocaleDateString()}</p>
+            </div>
+            <div class="codes">
+                ${codes.map(code => `<div class="code">${code}</div>`).join('')}
+            </div>
+            <div class="warning">
+                <strong>Security Warning:</strong>
+                <ul>
+                    <li>Each code can only be used once</li>
+                    <li>Store these codes in a secure location</li>
+                    <li>Do not share with anyone</li>
+                    <li>Generate new codes if compromised</li>
+                </ul>
+            </div>
+        </body>
+        </html>
+    `);
+    printWindow.document.close();
+    printWindow.print();
+}
+
+function copyCodes() {
+    const codes = [{% for code in backup_codes %}'{{ code }}'{% if not loop.last %},{% endif %}{% endfor %}];
+    const codesText = 'Healthcare App - Backup Codes\\n' + 
+                     'Generated: ' + new Date().toLocaleDateString() + '\\n\\n' +
+                     codes.join('\\n') + 
+                     '\\n\\nSecurity Warning: Each code can only be used once. Store securely.';
+    
+    navigator.clipboard.writeText(codesText).then(function() {
+        alert('Backup codes copied to clipboard!');
+    }, function(err) {
+        // Fallback for older browsers
+        const textArea = document.createElement('textarea');
+        textArea.value = codesText;
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        alert('Backup codes copied to clipboard!');
+    });
+}
+</script>
+{% endblock %}

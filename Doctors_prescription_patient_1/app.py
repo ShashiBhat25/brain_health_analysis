@@ -1,17 +1,18 @@
 from flask import Flask, render_template, request, redirect, url_for, session, flash, jsonify, send_file
 import mysql.connector
 import random
-import smtplib
 import os
 import json
 import hashlib
 import base64
-from email.mime.text import MIMEText
 from datetime import datetime
 from werkzeug.utils import secure_filename
 import joblib
 import pandas as pd
 import io
+import pyotp
+import qrcode
+from io import BytesIO
 
 # Load environment variables (optional)
 try:
@@ -25,6 +26,7 @@ app = Flask(__name__)
 # Configuration from environment variables with fallbacks
 app.secret_key = os.getenv('FLASK_SECRET_KEY', 'your_secret_key_here_change_in_production')
 app.config['MAX_CONTENT_LENGTH'] = int(os.getenv('MAX_CONTENT_LENGTH', 33554432))  # 32MB default
+app.config['UPLOAD_FOLDER'] = 'static/uploads/prescriptions'
 
 # Production vs Development settings
 IS_PRODUCTION = os.getenv('FLASK_ENV', 'development') == 'production'
@@ -51,10 +53,6 @@ db_config = {
     'password': os.getenv('DB_PASSWORD', 'root')
 }
 
-
-
-app.config['UPLOAD_FOLDER'] = 'static/uploads/prescriptions'
-app.config['MAX_CONTENT_LENGTH'] = 32 * 1024 * 1024  # 32 MB
 ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'pdf', 'doc', 'docx'}
 
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
@@ -76,6 +74,65 @@ def get_db_connection():
     config = db_config.copy()
     config['database'] = 'healthcare_system'
     return mysql.connector.connect(**config)
+
+# -------------------- TOTP HELPERS -------------------- #
+
+def generate_totp_secret():
+    """Generate a new TOTP secret for a user."""
+    return pyotp.random_base32()
+
+def generate_qr_code(secret, user_email, issuer_name="Healthcare App"):
+    """Generate QR code for TOTP setup."""
+    totp = pyotp.TOTP(secret)
+    provisioning_uri = totp.provisioning_uri(
+        name=user_email,
+        issuer_name=issuer_name
+    )
+    
+    qr = qrcode.QRCode(version=1, box_size=10, border=5)
+    qr.add_data(provisioning_uri)
+    qr.make(fit=True)
+    
+    img = qr.make_image(fill_color="black", back_color="white")
+    
+    # Convert to base64 for display in HTML
+    buffer = BytesIO()
+    img.save(buffer, format='PNG')
+    buffer.seek(0)
+    qr_code_base64 = base64.b64encode(buffer.getvalue()).decode()
+    
+    return qr_code_base64
+
+def verify_totp_code(secret, user_code):
+    """Verify TOTP code entered by user."""
+    if not secret or not user_code:
+        return False
+    
+    totp = pyotp.TOTP(secret)
+    # Allow for 1 time step tolerance (30 seconds before/after)
+    return totp.verify(user_code, valid_window=1)
+
+def generate_backup_codes():
+    """Generate backup codes for account recovery."""
+    codes = []
+    for _ in range(10):
+        code = ''.join([str(random.randint(0, 9)) for _ in range(8)])
+        codes.append(code)
+    return codes
+
+def verify_backup_code(stored_codes, entered_code):
+    """Verify and consume a backup code."""
+    if not stored_codes or not entered_code:
+        return False, stored_codes
+    
+    try:
+        codes_list = json.loads(stored_codes) if isinstance(stored_codes, str) else stored_codes
+        if entered_code in codes_list:
+            codes_list.remove(entered_code)  # Use code only once
+            return True, json.dumps(codes_list)
+        return False, stored_codes
+    except (json.JSONDecodeError, TypeError):
+        return False, stored_codes
 
 
 import requests
@@ -231,6 +288,9 @@ def setup_database():
             cursor.close()
         if conn:
             conn.close()
+    
+    # Add TOTP columns
+    alter_tables_for_totp()
 
 def alter_tables_for_digital_signature():
     """Add digital_signature column to prescriptions table if missing."""
@@ -252,6 +312,47 @@ def alter_tables_for_digital_signature():
             print("'digital_signature' column already exists.")
     except mysql.connector.Error as e:
         print(f"Error altering prescriptions table: {e}")
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+
+def alter_tables_for_totp():
+    """Add TOTP columns to user tables if missing."""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Add TOTP columns to patients table
+        tables_columns = [
+            ('patients', 'totp_secret', 'VARCHAR(32)'),
+            ('patients', 'totp_enabled', 'BOOLEAN DEFAULT FALSE'),
+            ('patients', 'backup_codes', 'TEXT'),
+            ('doctors', 'totp_secret', 'VARCHAR(32)'),
+            ('doctors', 'totp_enabled', 'BOOLEAN DEFAULT FALSE'),
+            ('doctors', 'backup_codes', 'TEXT'),
+            ('caretaker', 'totp_secret', 'VARCHAR(32)'),
+            ('caretaker', 'totp_enabled', 'BOOLEAN DEFAULT FALSE'),
+            ('caretaker', 'backup_codes', 'TEXT')
+        ]
+        
+        for table, column, column_type in tables_columns:
+            cursor.execute(f"""
+                SELECT COUNT(*) FROM information_schema.COLUMNS 
+                WHERE TABLE_SCHEMA = 'healthcare_system' 
+                AND TABLE_NAME = '{table}' 
+                AND COLUMN_NAME = '{column}'
+            """)
+            column_exists = cursor.fetchone()[0]
+            if column_exists == 0:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {column_type}")
+                print(f"Added '{column}' column to {table} table.")
+        
+        conn.commit()
+        print("TOTP columns added successfully.")
+    except mysql.connector.Error as e:
+        print(f"Error adding TOTP columns: {e}")
     finally:
         if cursor:
             cursor.close()
@@ -367,6 +468,9 @@ def patient_login():
     if request.method == 'POST':
         aadhar_id = request.form['aadhar_id']
         password = request.form['password']
+        totp_code = request.form.get('totp_code', '')
+        backup_code = request.form.get('backup_code', '')
+        
         try:
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -380,14 +484,39 @@ def patient_login():
             
             dbpass = patient["password"]
             
-            if dbpass == password:
-                session["user_type"] = "patient"
-                session["patient_aadhar"] = aadhar_id
-                flash("Login successful!", "success")
-                return redirect(url_for("patient_dashboard"))
-            else:
+            if dbpass != password:
                 flash("Incorrect password!", "error")
                 return render_template("patient_login.html")
+            
+            # Check if TOTP is enabled
+            if patient.get('totp_enabled', False):
+                totp_secret = patient.get('totp_secret')
+                
+                # Try TOTP code first
+                if totp_code and verify_totp_code(totp_secret, totp_code):
+                    # TOTP verified successfully
+                    pass
+                elif backup_code:
+                    # Try backup code
+                    is_valid, updated_codes = verify_backup_code(patient.get('backup_codes'), backup_code)
+                    if is_valid:
+                        # Update backup codes in database
+                        cursor.execute("UPDATE patients SET backup_codes = %s WHERE aadhar_id = %s", 
+                                     (updated_codes, aadhar_id))
+                        conn.commit()
+                        flash("Backup code used successfully. Please consider regenerating backup codes.", "warning")
+                    else:
+                        flash("Invalid backup code!", "error")
+                        return render_template("patient_login.html", show_totp=True)
+                else:
+                    flash("Please enter TOTP code or backup code!", "error")
+                    return render_template("patient_login.html", show_totp=True)
+            
+            # Login successful
+            session["user_type"] = "patient"
+            session["patient_aadhar"] = aadhar_id
+            flash("Login successful!", "success")
+            return redirect(url_for("patient_dashboard"))
 
         finally:
             cursor.close()
@@ -543,6 +672,167 @@ def remove_doctor(doctor_id):
 
     return redirect(url_for('patient_dashboard'))
 
+@app.route('/patient/setup-totp', methods=['GET', 'POST'])
+def patient_setup_totp():
+    if 'user_type' not in session or session['user_type'] != 'patient':
+        return redirect(url_for('patient_login'))
+    
+    if request.method == 'POST':
+        totp_code = request.form.get('totp_code')
+        
+        if 'temp_totp_secret' not in session:
+            flash('TOTP setup session expired. Please try again.', 'error')
+            return redirect(url_for('patient_setup_totp'))
+        
+        secret = session['temp_totp_secret']
+        
+        if verify_totp_code(secret, totp_code):
+            # Generate backup codes
+            backup_codes = generate_backup_codes()
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE patients 
+                    SET totp_secret = %s, totp_enabled = TRUE, backup_codes = %s 
+                    WHERE aadhar_id = %s
+                ''', (secret, json.dumps(backup_codes), session['patient_aadhar']))
+                conn.commit()
+                
+                # Clear temp secret
+                session.pop('temp_totp_secret', None)
+                
+                flash('TOTP enabled successfully!', 'success')
+                return render_template('totp_backup_codes.html', 
+                                     backup_codes=backup_codes, 
+                                     user_type='patient')
+                
+            except mysql.connector.Error as e:
+                flash('Error enabling TOTP. Please try again.', 'error')
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+        else:
+            flash('Invalid TOTP code. Please try again.', 'error')
+    
+    # Generate new secret and QR code
+    secret = generate_totp_secret()
+    session['temp_totp_secret'] = secret
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT email FROM patients WHERE aadhar_id = %s", (session['patient_aadhar'],))
+        patient = cursor.fetchone()
+        user_email = patient['email'] if patient else session['patient_aadhar']
+    except:
+        user_email = session['patient_aadhar']
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    qr_code = generate_qr_code(secret, user_email)
+    
+    return render_template('setup_totp.html', 
+                         qr_code=qr_code, 
+                         secret=secret,
+                         user_type='patient')
+
+@app.route('/patient/disable-totp', methods=['POST'])
+def patient_disable_totp():
+    if 'user_type' not in session or session['user_type'] != 'patient':
+        return redirect(url_for('patient_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM patients WHERE aadhar_id = %s", (session['patient_aadhar'],))
+        patient = cursor.fetchone()
+        
+        if not patient or patient['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('patient_profile'))
+        
+        if patient.get('totp_enabled') and not verify_totp_code(patient.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('patient_profile'))
+        
+        cursor.execute('''
+            UPDATE patients 
+            SET totp_secret = NULL, totp_enabled = FALSE, backup_codes = NULL 
+            WHERE aadhar_id = %s
+        ''', (session['patient_aadhar'],))
+        conn.commit()
+        
+        flash('TOTP disabled successfully!', 'success')
+        
+    except mysql.connector.Error as e:
+        flash('Error disabling TOTP. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('patient_profile'))
+
+@app.route('/patient/regenerate-backup-codes', methods=['POST'])
+def patient_regenerate_backup_codes():
+    if 'user_type' not in session or session['user_type'] != 'patient':
+        return redirect(url_for('patient_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM patients WHERE aadhar_id = %s", (session['patient_aadhar'],))
+        patient = cursor.fetchone()
+        
+        if not patient or patient['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('patient_profile'))
+        
+        if not patient.get('totp_enabled'):
+            flash('TOTP is not enabled!', 'error')
+            return redirect(url_for('patient_profile'))
+        
+        if not verify_totp_code(patient.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('patient_profile'))
+        
+        # Generate new backup codes
+        backup_codes = generate_backup_codes()
+        
+        cursor.execute('''
+            UPDATE patients SET backup_codes = %s WHERE aadhar_id = %s
+        ''', (json.dumps(backup_codes), session['patient_aadhar']))
+        conn.commit()
+        
+        flash('Backup codes regenerated successfully!', 'success')
+        return render_template('totp_backup_codes.html', 
+                             backup_codes=backup_codes, 
+                             user_type='patient')
+        
+    except mysql.connector.Error as e:
+        flash('Error regenerating backup codes. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('patient_profile'))
+
 # -------------------- DOCTOR ROUTES -------------------- #
 
 @app.route('/doctor/signup', methods=['GET', 'POST'])
@@ -583,6 +873,9 @@ def doctor_login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
+        totp_code = request.form.get('totp_code', '')
+        backup_code = request.form.get('backup_code', '')
+        
         try:
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -593,14 +886,40 @@ def doctor_login():
                 flash('User not found! Please sign up first.', 'error')
                 return render_template('doctor_login.html')
             
-            if doctor['password'] == password:
-                session['doctor_id'] = doctor['doctor_id']
-                session['doctor_name'] = doctor['name']
-                session['user_type'] = 'doctor'
-                flash('Login successful!', 'success')
-                return redirect(url_for('doctor_dashboard'))
-            else:
+            if doctor['password'] != password:
                 flash('Incorrect password!', 'error')
+                return render_template('doctor_login.html')
+            
+            # Check if TOTP is enabled
+            if doctor.get('totp_enabled', False):
+                totp_secret = doctor.get('totp_secret')
+                
+                # Try TOTP code first
+                if totp_code and verify_totp_code(totp_secret, totp_code):
+                    # TOTP verified successfully
+                    pass
+                elif backup_code:
+                    # Try backup code
+                    is_valid, updated_codes = verify_backup_code(doctor.get('backup_codes'), backup_code)
+                    if is_valid:
+                        # Update backup codes in database
+                        cursor.execute("UPDATE doctors SET backup_codes = %s WHERE doctor_id = %s", 
+                                     (updated_codes, doctor['doctor_id']))
+                        conn.commit()
+                        flash("Backup code used successfully. Please consider regenerating backup codes.", "warning")
+                    else:
+                        flash("Invalid backup code!", "error")
+                        return render_template("doctor_login.html", show_totp=True)
+                else:
+                    flash("Please enter TOTP code or backup code!", "error")
+                    return render_template("doctor_login.html", show_totp=True)
+            
+            # Login successful
+            session['doctor_id'] = doctor['doctor_id']
+            session['doctor_name'] = doctor['name']
+            session['user_type'] = 'doctor'
+            flash('Login successful!', 'success')
+            return redirect(url_for('doctor_dashboard'))
                 
         except mysql.connector.Error as e:
             print(f"Doctor login error: {e}")
@@ -641,6 +960,167 @@ def doctor_dashboard():
             conn.close()
 
     return render_template('doctor_dashboard.html', my_patients=my_patients)
+
+@app.route('/doctor/setup-totp', methods=['GET', 'POST'])
+def doctor_setup_totp():
+    if 'user_type' not in session or session['user_type'] != 'doctor':
+        return redirect(url_for('doctor_login'))
+    
+    if request.method == 'POST':
+        totp_code = request.form.get('totp_code')
+        
+        if 'temp_totp_secret' not in session:
+            flash('TOTP setup session expired. Please try again.', 'error')
+            return redirect(url_for('doctor_setup_totp'))
+        
+        secret = session['temp_totp_secret']
+        
+        if verify_totp_code(secret, totp_code):
+            # Generate backup codes
+            backup_codes = generate_backup_codes()
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE doctors 
+                    SET totp_secret = %s, totp_enabled = TRUE, backup_codes = %s 
+                    WHERE doctor_id = %s
+                ''', (secret, json.dumps(backup_codes), session['doctor_id']))
+                conn.commit()
+                
+                # Clear temp secret
+                session.pop('temp_totp_secret', None)
+                
+                flash('TOTP enabled successfully!', 'success')
+                return render_template('totp_backup_codes.html', 
+                                     backup_codes=backup_codes, 
+                                     user_type='doctor')
+                
+            except mysql.connector.Error as e:
+                flash('Error enabling TOTP. Please try again.', 'error')
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+        else:
+            flash('Invalid TOTP code. Please try again.', 'error')
+    
+    # Generate new secret and QR code
+    secret = generate_totp_secret()
+    session['temp_totp_secret'] = secret
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT email FROM doctors WHERE doctor_id = %s", (session['doctor_id'],))
+        doctor = cursor.fetchone()
+        user_email = doctor['email'] if doctor else session['doctor_id']
+    except:
+        user_email = session['doctor_id']
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    qr_code = generate_qr_code(secret, user_email)
+    
+    return render_template('setup_totp.html', 
+                         qr_code=qr_code, 
+                         secret=secret,
+                         user_type='doctor')
+
+@app.route('/doctor/disable-totp', methods=['POST'])
+def doctor_disable_totp():
+    if 'user_type' not in session or session['user_type'] != 'doctor':
+        return redirect(url_for('doctor_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM doctors WHERE doctor_id = %s", (session['doctor_id'],))
+        doctor = cursor.fetchone()
+        
+        if not doctor or doctor['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('doctor_profile'))
+        
+        if doctor.get('totp_enabled') and not verify_totp_code(doctor.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('doctor_profile'))
+        
+        cursor.execute('''
+            UPDATE doctors 
+            SET totp_secret = NULL, totp_enabled = FALSE, backup_codes = NULL 
+            WHERE doctor_id = %s
+        ''', (session['doctor_id'],))
+        conn.commit()
+        
+        flash('TOTP disabled successfully!', 'success')
+        
+    except mysql.connector.Error as e:
+        flash('Error disabling TOTP. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('doctor_profile'))
+
+@app.route('/doctor/regenerate-backup-codes', methods=['POST'])
+def doctor_regenerate_backup_codes():
+    if 'user_type' not in session or session['user_type'] != 'doctor':
+        return redirect(url_for('doctor_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM doctors WHERE doctor_id = %s", (session['doctor_id'],))
+        doctor = cursor.fetchone()
+        
+        if not doctor or doctor['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('doctor_profile'))
+        
+        if not doctor.get('totp_enabled'):
+            flash('TOTP is not enabled!', 'error')
+            return redirect(url_for('doctor_profile'))
+        
+        if not verify_totp_code(doctor.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('doctor_profile'))
+        
+        # Generate new backup codes
+        backup_codes = generate_backup_codes()
+        
+        cursor.execute('''
+            UPDATE doctors SET backup_codes = %s WHERE doctor_id = %s
+        ''', (json.dumps(backup_codes), session['doctor_id']))
+        conn.commit()
+        
+        flash('Backup codes regenerated successfully!', 'success')
+        return render_template('totp_backup_codes.html', 
+                             backup_codes=backup_codes, 
+                             user_type='doctor')
+        
+    except mysql.connector.Error as e:
+        flash('Error regenerating backup codes. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('doctor_profile'))
 
 @app.route('/doctor/search-patient', methods=['GET', 'POST'])
 def search_patient():
@@ -1432,31 +1912,40 @@ def brain_signal_ai(aadhar_id):
 
 @app.route("/send_brain_report/<aadhar_id>", methods=["POST"])
 def send_brain_report(aadhar_id):
-    doctor_email = request.form.get("doctor_email")
-    result = request.form.get("result")
-    features = request.form.get("features")
-    graph_image = request.form.get("graph_image")  # Base64 encoded graph image
+    try:
+        doctor_email = request.form.get("doctor_email")
+        result = request.form.get("result")
+        features = request.form.get("features")
+        graph_image = request.form.get("graph_image")  # Base64 encoded graph image
 
-    # Store report in database with graph image
-    query = """
-        INSERT INTO brain_reports (aadhar_id, doctor_email, result, features, graph_image)
-        VALUES (%s, %s, %s, %s, %s)
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    values = (aadhar_id, doctor_email, result, features, graph_image)
-    cursor.execute(query, values)
-    conn.commit()
-    cursor.close()
-    conn.close()
+        if not doctor_email:
+            flash("Please select a doctor to send the report.", "error")
+            return redirect(request.referrer or url_for('patient_dashboard'))
 
-    # OPTIONAL: Email to doctor
-    # send_email(doctor_email, "Brain Signal Report", f"Result:\n{result}")
+        # Store report in database with graph image
+        query = """
+            INSERT INTO brain_reports (aadhar_id, doctor_email, result, features, graph_image)
+            VALUES (%s, %s, %s, %s, %s)
+        """
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        values = (aadhar_id, doctor_email, result, features, graph_image)
+        cursor.execute(query, values)
+        conn.commit()
+        cursor.close()
+        conn.close()
 
-    return render_template(
-        "success.html",
-        message="Brain signal report with EEG graph successfully sent to the doctor!"
-    )
+        # OPTIONAL: Email to doctor
+        # send_email(doctor_email, "Brain Signal Report", f"Result:\n{result}")
+
+        flash("Brain signal report with EEG graph successfully sent to the doctor!", "success")
+        return render_template(
+            "success.html",
+            message="Brain signal report with EEG graph successfully sent to the doctor!"
+        )
+    except Exception as e:
+        flash(f"Error sending report: {str(e)}", "error")
+        return redirect(request.referrer or url_for('patient_dashboard'))
 
 
 # -------------------- PROFILE MANAGEMENT ROUTES -------------------- #
@@ -1696,3 +2185,10 @@ if __name__ == '__main__':
     debug = not IS_PRODUCTION
     
     app.run(host=host, port=port, debug=debug)
+
+if __name__ == '__main__':
+    setup_database()
+    alter_tables()
+    alter_tables_for_digital_signature()
+    alter_tables_for_totp()
+    app.run(debug=True, host='0.0.0.0', port=5000)
