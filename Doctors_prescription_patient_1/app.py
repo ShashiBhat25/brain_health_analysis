@@ -1122,6 +1122,167 @@ def doctor_regenerate_backup_codes():
     
     return redirect(url_for('doctor_profile'))
 
+@app.route('/caretaker/setup-totp', methods=['GET', 'POST'])
+def caretaker_setup_totp():
+    if 'user_type' not in session or session['user_type'] != 'caretaker':
+        return redirect(url_for('caretaker_login'))
+    
+    if request.method == 'POST':
+        totp_code = request.form.get('totp_code')
+        
+        if 'temp_totp_secret' not in session:
+            flash('TOTP setup session expired. Please try again.', 'error')
+            return redirect(url_for('caretaker_setup_totp'))
+        
+        secret = session['temp_totp_secret']
+        
+        if verify_totp_code(secret, totp_code):
+            # Generate backup codes
+            backup_codes = generate_backup_codes()
+            
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute('''
+                    UPDATE caretaker 
+                    SET totp_secret = %s, totp_enabled = TRUE, backup_codes = %s 
+                    WHERE caretaker_id = %s
+                ''', (secret, json.dumps(backup_codes), session['caretaker_id']))
+                conn.commit()
+                
+                # Clear temp secret
+                session.pop('temp_totp_secret', None)
+                
+                flash('TOTP enabled successfully!', 'success')
+                return render_template('totp_backup_codes.html', 
+                                     backup_codes=backup_codes, 
+                                     user_type='caretaker')
+                
+            except mysql.connector.Error as e:
+                flash('Error enabling TOTP. Please try again.', 'error')
+            finally:
+                if cursor:
+                    cursor.close()
+                if conn:
+                    conn.close()
+        else:
+            flash('Invalid TOTP code. Please try again.', 'error')
+    
+    # Generate new secret and QR code
+    secret = generate_totp_secret()
+    session['temp_totp_secret'] = secret
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT email FROM caretaker WHERE caretaker_id = %s", (session['caretaker_id'],))
+        caretaker = cursor.fetchone()
+        user_email = caretaker['email'] if caretaker else session['caretaker_id']
+    except:
+        user_email = session['caretaker_id']
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    qr_code = generate_qr_code(secret, user_email)
+    
+    return render_template('setup_totp.html', 
+                         qr_code=qr_code, 
+                         secret=secret,
+                         user_type='caretaker')
+
+@app.route('/caretaker/disable-totp', methods=['POST'])
+def caretaker_disable_totp():
+    if 'user_type' not in session or session['user_type'] != 'caretaker':
+        return redirect(url_for('caretaker_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM caretaker WHERE caretaker_id = %s", (session['caretaker_id'],))
+        caretaker = cursor.fetchone()
+        
+        if not caretaker or caretaker['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('caretaker_profile'))
+        
+        if caretaker.get('totp_enabled') and not verify_totp_code(caretaker.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('caretaker_profile'))
+        
+        cursor.execute('''
+            UPDATE caretaker 
+            SET totp_secret = NULL, totp_enabled = FALSE, backup_codes = NULL 
+            WHERE caretaker_id = %s
+        ''', (session['caretaker_id'],))
+        conn.commit()
+        
+        flash('TOTP disabled successfully!', 'success')
+        
+    except mysql.connector.Error as e:
+        flash('Error disabling TOTP. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('caretaker_profile'))
+
+@app.route('/caretaker/regenerate-backup-codes', methods=['POST'])
+def caretaker_regenerate_backup_codes():
+    if 'user_type' not in session or session['user_type'] != 'caretaker':
+        return redirect(url_for('caretaker_login'))
+    
+    password = request.form.get('password')
+    totp_code = request.form.get('totp_code')
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM caretaker WHERE caretaker_id = %s", (session['caretaker_id'],))
+        caretaker = cursor.fetchone()
+        
+        if not caretaker or caretaker['password'] != password:
+            flash('Incorrect password!', 'error')
+            return redirect(url_for('caretaker_profile'))
+        
+        if not caretaker.get('totp_enabled'):
+            flash('TOTP is not enabled!', 'error')
+            return redirect(url_for('caretaker_profile'))
+        
+        if not verify_totp_code(caretaker.get('totp_secret'), totp_code):
+            flash('Invalid TOTP code!', 'error')
+            return redirect(url_for('caretaker_profile'))
+        
+        # Generate new backup codes
+        backup_codes = generate_backup_codes()
+        
+        cursor.execute('''
+            UPDATE caretaker SET backup_codes = %s WHERE caretaker_id = %s
+        ''', (json.dumps(backup_codes), session['caretaker_id']))
+        conn.commit()
+        
+        flash('Backup codes regenerated successfully!', 'success')
+        return render_template('totp_backup_codes.html', 
+                             backup_codes=backup_codes, 
+                             user_type='caretaker')
+        
+    except mysql.connector.Error as e:
+        flash('Error regenerating backup codes. Please try again.', 'error')
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
+    
+    return redirect(url_for('caretaker_profile'))
+
 @app.route('/doctor/search-patient', methods=['GET', 'POST'])
 def search_patient():
     if 'user_type' not in session or session['user_type'] != 'doctor':
@@ -1392,6 +1553,9 @@ def caretaker_login():
     if request.method == 'POST':
         email = request.form['email']
         password = request.form['password']
+        totp_code = request.form.get('totp_code', '')
+        backup_code = request.form.get('backup_code', '')
+        
         try:
             conn = get_db_connection()
             cursor = conn.cursor(dictionary=True)
@@ -1402,17 +1566,43 @@ def caretaker_login():
                 flash('User not found! Please sign up first.', 'error')
                 return render_template('caretaker_login.html')
             
-            if caretaker['password'] == password:
-                session['caretaker_id'] = caretaker['caretaker_id']
-                session['caretaker_name'] = caretaker['name']
-                session['user_type'] = 'caretaker'
-                flash('Login successful!', 'success')
-                return redirect(url_for('caretaker_dashboard'))
-            else:
+            if caretaker['password'] != password:
                 flash('Incorrect password!', 'error')
+                return render_template('caretaker_login.html')
+            
+            # Check if TOTP is enabled
+            if caretaker.get('totp_enabled', False):
+                totp_secret = caretaker.get('totp_secret')
+                
+                # Try TOTP code first
+                if totp_code and verify_totp_code(totp_secret, totp_code):
+                    # TOTP verified successfully
+                    pass
+                elif backup_code:
+                    # Try backup code
+                    is_valid, updated_codes = verify_backup_code(caretaker.get('backup_codes'), backup_code)
+                    if is_valid:
+                        # Update backup codes in database
+                        cursor.execute("UPDATE caretaker SET backup_codes = %s WHERE caretaker_id = %s", 
+                                     (updated_codes, caretaker['caretaker_id']))
+                        conn.commit()
+                        flash("Backup code used successfully. Please consider regenerating backup codes.", "warning")
+                    else:
+                        flash("Invalid backup code!", "error")
+                        return render_template("caretaker_login.html", show_totp=True)
+                else:
+                    flash("Please enter TOTP code or backup code!", "error")
+                    return render_template("caretaker_login.html", show_totp=True)
+            
+            # Login successful
+            session['caretaker_id'] = caretaker['caretaker_id']
+            session['caretaker_name'] = caretaker['name']
+            session['user_type'] = 'caretaker'
+            flash('Login successful!', 'success')
+            return redirect(url_for('caretaker_dashboard'))
                 
         except mysql.connector.Error as e:
-            print(f"caretaker login error: {e}")
+            print(f"Caretaker login error: {e}")
             flash('Database error occurred', 'error')
         finally:
             if cursor:
