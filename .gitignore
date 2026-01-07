@@ -59,8 +59,8 @@ desktop.ini
 *.log
 
 # Uploaded files (prescriptions)
-Doctors_prescription_patient_1/static/uploads/prescriptions/*
-!Doctors_prescription_patient_1/static/uploads/prescriptions/.gitkeep
+Brain_health_analyzer/static/uploads/prescriptions/*
+!Brain_health_analyzer/static/uploads/prescriptions/.gitkeep
 
 # Model files (optional - uncomment if you want to exclude large model files)
 # *.pkl

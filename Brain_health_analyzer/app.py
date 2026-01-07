@@ -43,7 +43,7 @@ else:
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year
 
 # Load ML model
-clf = joblib.load('Doctors_prescription_patient_1/Best_Model.pkl')
+clf = joblib.load('Brain_health_analyzer/Best_Model.pkl')
 
 # -------------------- CONFIG -------------------- #
 

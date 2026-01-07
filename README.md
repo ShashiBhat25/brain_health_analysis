@@ -78,7 +78,7 @@ pip install flask mysql-connector-python pandas numpy scikit-learn joblib werkze
 
 3. Configure MySQL:
 - Create a MySQL database named `healthcare_system`
-- Update database credentials in `Doctors_prescription_patient_1/app.py`:
+- Update database credentials in `Brain_health_analyzer/app.py`:
 ```python
 db_config = {
     'host': 'localhost',
@@ -89,7 +89,7 @@ db_config = {
 
 4. Run the application:
 ```bash
-cd Doctors_prescription_patient_1
+cd Brain_health_analyzer
 python app.py
 ```
 
@@ -124,7 +124,7 @@ python app.py
 
 ```
 brain_health_analysis/
-├── Doctors_prescription_patient_1/
+├── Brain_health_analyzer/
 │   ├── app.py                          # Main Flask application
 │   ├── Best_Model.pkl                  # Trained ML model
 │   ├── test_totp.py                    # TOTP functionality tests
