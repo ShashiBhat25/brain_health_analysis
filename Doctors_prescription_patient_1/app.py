@@ -43,7 +43,7 @@ else:
     app.config['SEND_FILE_MAX_AGE_DEFAULT'] = 31536000  # 1 year
 
 # Load ML model
-clf = joblib.load('Best_Model.pkl')
+clf = joblib.load('Doctors_prescription_patient_1/Best_Model.pkl')
 
 # -------------------- CONFIG -------------------- #
 
@@ -892,6 +892,10 @@ def doctor_login():
             
             # Check if TOTP is enabled
             if doctor.get('totp_enabled', False):
+                # If TOTP is enabled but no code provided, show TOTP form
+                if not totp_code and not backup_code:
+                    return render_template("doctor_login.html", show_totp=True, email=email)
+                
                 totp_secret = doctor.get('totp_secret')
                 
                 # Try TOTP code first
@@ -909,10 +913,10 @@ def doctor_login():
                         flash("Backup code used successfully. Please consider regenerating backup codes.", "warning")
                     else:
                         flash("Invalid backup code!", "error")
-                        return render_template("doctor_login.html", show_totp=True)
+                        return render_template("doctor_login.html", show_totp=True, email=email)
                 else:
                     flash("Please enter TOTP code or backup code!", "error")
-                    return render_template("doctor_login.html", show_totp=True)
+                    return render_template("doctor_login.html", show_totp=True, email=email)
             
             # Login successful
             session['doctor_id'] = doctor['doctor_id']
@@ -929,7 +933,7 @@ def doctor_login():
                 cursor.close()
             if conn:
                 conn.close()
-
+    
     return render_template('doctor_login.html')
 
 @app.route('/doctor/dashboard')
@@ -1572,6 +1576,10 @@ def caretaker_login():
             
             # Check if TOTP is enabled
             if caretaker.get('totp_enabled', False):
+                # If TOTP is enabled but no code provided, show TOTP form
+                if not totp_code and not backup_code:
+                    return render_template("caretaker_login.html", show_totp=True, email=email)
+                
                 totp_secret = caretaker.get('totp_secret')
                 
                 # Try TOTP code first
@@ -1589,10 +1597,10 @@ def caretaker_login():
                         flash("Backup code used successfully. Please consider regenerating backup codes.", "warning")
                     else:
                         flash("Invalid backup code!", "error")
-                        return render_template("caretaker_login.html", show_totp=True)
+                        return render_template("caretaker_login.html", show_totp=True, email=email)
                 else:
                     flash("Please enter TOTP code or backup code!", "error")
-                    return render_template("caretaker_login.html", show_totp=True)
+                    return render_template("caretaker_login.html", show_totp=True, email=email)
             
             # Login successful
             session['caretaker_id'] = caretaker['caretaker_id']
@@ -1609,7 +1617,7 @@ def caretaker_login():
                 cursor.close()
             if conn:
                 conn.close()
-
+    
     return render_template('caretaker_login.html')
 
 @app.route('/caretaker/dashboard')

@@ -20,12 +20,43 @@
                 <form method="POST">
                     <div class="mb-3">
                         <label for="email" class="form-label">Email</label>
-                        <input type="email" class="form-control" id="email" name="email" required>
+                        <input type="email" class="form-control" id="email" name="email" value="{{ email or '' }}" required>
                     </div>
                     <div class="mb-3">
                         <label for="password" class="form-label">Password</label>
                         <input type="password" class="form-control" id="password" name="password" required>
                     </div>
+                    
+                    {% if show_totp %}
+                    <div class="mb-3">
+                        <label for="totp_code" class="form-label">
+                            <i class="fas fa-shield-alt me-2"></i>Two-Factor Authentication Code
+                        </label>
+                        <input type="text" class="form-control text-center" id="totp_code" name="totp_code" 
+                               placeholder="000000" maxlength="6" pattern="[0-9]{6}"
+                               style="font-size: 1.2em; letter-spacing: 0.1em;">
+                        <small class="form-text text-muted">Enter 6-digit code from your authenticator app</small>
+                    </div>
+                    
+                    <div class="mb-3">
+                        <div class="text-center">
+                            <button type="button" class="btn btn-link btn-sm" onclick="toggleBackupCode()">
+                                Use backup code instead
+                            </button>
+                        </div>
+                    </div>
+                    
+                    <div class="mb-3" id="backup-code-section" style="display: none;">
+                        <label for="backup_code" class="form-label">
+                            <i class="fas fa-key me-2"></i>Backup Code
+                        </label>
+                        <input type="text" class="form-control text-center" id="backup_code" name="backup_code" 
+                               placeholder="Enter backup code"
+                               style="font-size: 1.1em; letter-spacing: 0.05em;">
+                        <small class="form-text text-muted">Use one of your saved backup codes</small>
+                    </div>
+                    {% endif %}
+                    
                     <button type="submit" class="btn btn-success">Login</button>
                     <a href="{{ url_for('caretaker_signup') }}" class="btn btn-link">New Caretaker? Sign up</a>
                 </form>
@@ -35,8 +66,7 @@
 </div>
 {% endblock %}
 
-<styl
-e>
+<style>
 .holographic-bg {
     position: fixed;
     top: 0;
@@ -249,8 +279,34 @@ function initNeuralNetwork() {
     });
 }
 
+function toggleBackupCode() {
+    const backupSection = document.getElementById('backup-code-section');
+    const totpInput = document.getElementById('totp_code');
+    const backupInput = document.getElementById('backup_code');
+    
+    if (backupSection.style.display === 'none') {
+        backupSection.style.display = 'block';
+        totpInput.required = false;
+        backupInput.required = true;
+        totpInput.value = '';
+    } else {
+        backupSection.style.display = 'none';
+        totpInput.required = true;
+        backupInput.required = false;
+        backupInput.value = '';
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
     createParticles();
     initNeuralNetwork();
+    
+    // Auto-format TOTP input
+    const totpInput = document.getElementById('totp_code');
+    if (totpInput) {
+        totpInput.addEventListener('input', function(e) {
+            this.value = this.value.replace(/[^0-9]/g, '');
+        });
+    }
 });
 </script>

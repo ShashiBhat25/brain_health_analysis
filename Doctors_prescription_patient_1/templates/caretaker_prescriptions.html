@@ -2,6 +2,91 @@
 
 {% block title %}Patient Prescriptions{% endblock %}
 
+{% block extra_css %}
+<style>
+/* Complete fix for modal flickering issue */
+
+/* Disable ALL hover effects on this page */
+.card:hover {
+    transform: none !important;
+    box-shadow: 0 10px 25px rgba(0,0,0,0.1) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(0,0,0,0.03) !important;
+}
+
+/* Disable button hover transforms */
+.btn:hover {
+    transform: none !important;
+}
+
+.btn-sm:hover {
+    transform: none !important;
+}
+
+/* Disable backdrop filter effects */
+.modal-backdrop {
+    backdrop-filter: none !important;
+    background-color: rgba(0,0,0,0.5) !important;
+}
+
+/* Simplify modal transitions */
+.modal .modal-dialog {
+    transition: none !important;
+    transform: none !important;
+}
+
+.modal.show .modal-dialog {
+    transform: none !important;
+}
+
+/* Prevent any animations during modal opening */
+.modal * {
+    transition: none !important;
+    animation: none !important;
+}
+
+/* Ensure table doesn't have conflicting styles */
+.table-responsive {
+    overflow-x: auto;
+    overflow-y: visible;
+}
+
+/* Prevent any transform effects on table elements */
+.table td, .table th {
+    transition: none !important;
+}
+
+/* Disable any gradient animations */
+.gradient-text {
+    animation: none !important;
+}
+
+/* Force static positioning for modal elements */
+.modal-dialog {
+    position: relative !important;
+    margin: 1.75rem auto !important;
+}
+
+/* Disable all animations when modal is opening */
+body.modal-opening * {
+    transition: none !important;
+    animation: none !important;
+    transform: none !important;
+}
+
+/* Ensure modal shows immediately without fade */
+.modal {
+    display: none;
+}
+
+.modal.show {
+    display: block !important;
+}
+</style>
+{% endblock %}
+
 {% block content %}
 <div class="row">
     <div class="col-md-12">
@@ -102,7 +187,7 @@
                             </tr>
 
                             <!-- Details Modal -->
-                            <div class="modal fade" id="detailsModal{{ prescription.id }}" tabindex="-1">
+                            <div class="modal" id="detailsModal{{ prescription.id }}" tabindex="-1">
                                 <div class="modal-dialog modal-lg">
                                     <div class="modal-content">
                                         <div class="modal-header">
@@ -163,4 +248,29 @@
         {% endif %}
     </div>
 </div>
+
+{% block extra_js %}
+<script>
+// Simple modal fix - no custom animations
+document.addEventListener('DOMContentLoaded', function() {
+    // Ensure all modals work properly without flickering
+    const modalTriggers = document.querySelectorAll('[data-bs-toggle="modal"]');
+    
+    modalTriggers.forEach(trigger => {
+        trigger.addEventListener('click', function(e) {
+            // Let Bootstrap handle the modal normally
+            // Just ensure no conflicting styles are applied
+            document.body.classList.add('modal-opening');
+        });
+    });
+    
+    // Clean up when modal closes
+    document.querySelectorAll('.modal').forEach(modal => {
+        modal.addEventListener('hidden.bs.modal', function() {
+            document.body.classList.remove('modal-opening');
+        });
+    });
+});
+</script>
+{% endblock %}
 {% endblock %}
